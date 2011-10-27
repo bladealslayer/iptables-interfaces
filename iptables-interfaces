@@ -1,0 +1,308 @@
+#!/bin/bash
+
+############################################################################
+#    iptables-interfaces                                                   #
+#    iptables' ifup/ifdown initialization script                           #
+#    v0.1.2                                                                #
+#                                                                          #
+#    This script is designed to be called by ifup/ifdown scripts upon      #
+#    interface (de)initialization. Command line operation is also          #
+#    possible.                                                             #
+#                                                                          #
+#    Copyright (C) 2007-2011 by Boyan Tabakov                              #
+#    blade@alslayer.net                                                    #
+#                                                                          #
+#    This program is free software; you can redistribute it and/or modify  #
+#    it under the terms of the GNU General Public License as published by  #
+#    the Free Software Foundation; either version 2 of the License, or     #
+#    (at your option) any later version.                                   #
+#                                                                          #
+#    This program is distributed in the hope that it will be useful,       #
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of        #
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         #
+#    GNU General Public License for more details.                          #
+#                                                                          #
+############################################################################
+
+set -e
+
+CONFIG='/etc/iptables-interfaces.conf'
+RULES_PATH='/etc/iptables-interfaces.d'
+
+FORCE=0
+
+# Config file options:
+IGNORED_INTERFACES=""
+
+[ -f "$CONFIG" ] && . "$CONFIG"
+
+set_vars(){
+	DEFAULT_CHAIN='default'
+	INTERFACE_CHAIN="interface_$IFACE"
+	DEFAULT_RULES='default.conf'
+	INTERFACE_RULES="$IFACE.conf"
+}
+
+usage(){
+	echo "iptables-interfaces --[start|force-start|stop] interface ..."
+	echo "iptables-interfaces --[start|force-start|stop] ALL"
+	echo
+	echo "Starts/stops iptables' rules for specified interfaces."
+	echo "ALL means 'all active' when starting and 'all existing'"
+	echo "when stopping. This allows --stop ALL to remove ANY"
+	echo "rules and chains defined by iptables-interfaces."
+	echo "Iterfaces configured as ignored in $CONFIG"
+	echo "are skipped when starting unless --force-start is used,"
+	echo "but are always stopped."
+}
+
+should_ignore(){
+	if [ "$FORCE" -eq 1 ] ; then
+		echo 0
+		return 0
+	fi
+	if echo "$IFACE" | egrep "^$IGNORED_INTERFACES$" 2>&1 > /dev/null ; then
+		# Interface should be ignored
+		echo 1
+		return 0
+	fi
+	echo 0
+}
+
+check_chain(){
+	local LOADED=`iptables -nL | grep "^Chain[[:space:]]*$1[[:space:]]" | wc -l`
+	# Chain is there
+	[ "$LOADED" -ne 0 ] && { echo 1 ; return 0 ; }
+	# Chain is not there
+	echo 0
+}
+
+check_interface_all(){
+	local EXISTS=`ifconfig -a | grep "^$1[[:space:]]" | wc -l`
+	# Interface exists
+	[ "$EXISTS" -ne 0 ] && { echo 1 ; return 0 ; }
+	# Interface does not exist
+	echo 0
+}
+
+check_interface(){
+	local ACTIVE=`ifconfig | grep "^$1[[:space:]]" | wc -l`
+	# Interface is active
+	[ "$ACTIVE" -ne 0 ] && { echo 1 ; return 0 ; }
+	# Interface is not active
+	echo 0
+}
+
+get_all_interfaces(){
+	ifconfig -a | grep '^[^[:space:]]' | grep -wv '^lo' | awk '{print $1}' | xargs echo
+}
+
+get_active_interfaces(){
+	ifconfig | grep '^[^[:space:]]' | grep -wv '^lo' | awk '{print $1}' | xargs echo
+}
+
+get_active_interfaces_count(){
+	get_active_interfaces | wc -w
+}
+
+strip_comments(){
+	egrep -v '^[[:space:]]*($|#)'
+}
+
+create_empty_chain(){
+	local LOADED=`check_chain "$1"`
+	if [ "$LOADED" -eq 0 ] ; then
+		iptables -N "$1"
+		CREATE_EMPTY_CHAIN_LAST="$1 new"
+	else
+		iptables -F "$1"
+		CREATE_EMPTY_CHAIN_LAST="$1 exists"
+	fi
+}
+
+remove_chain(){
+	local LOADED=`check_chain "$1"`
+	if [ "$LOADED" -eq 1 ] ; then
+		iptables -F "$1"
+		iptables -X "$1"
+	fi
+}
+
+start_direction(){
+	# $1 is input|output|forward specifying direction of filtered traffic (or rather the iptables built-in chain).
+	echo "$1" | egrep -q '^(input|output|forward)$' || return 5
+	
+	local DEFAULT_CHAIN="$1_$DEFAULT_CHAIN"
+	local INTERFACE_CHAIN="$1_$INTERFACE_CHAIN"
+	local DEFAULT_RULES="$1_$DEFAULT_RULES"
+	local INTERFACE_RULES="$1_$INTERFACE_RULES"
+	
+	# Check if interface should be ignored
+	local IGNORE=`should_ignore`
+	[ "$IGNORE" -eq 1 ] && return 0
+	
+	# The default and interface chains is recreated each time
+	# so that changes to the rules can be reflected.
+	
+	create_empty_chain "$DEFAULT_CHAIN"
+	
+	local RULES="$RULES_PATH/$DEFAULT_RULES"
+	if [ -f "$RULES" ] ; then
+		local PARAMS
+		while read PARAMS ; do
+			echo "$PARAMS" | strip_comments > /dev/null || continue
+			eval iptables -A "$DEFAULT_CHAIN"  $PARAMS || return 4
+		done < "$RULES"
+	fi
+	
+	local IO_OPTION='-i'
+	[ "$1" = 'output' ] && IO_OPTION='-o'
+	
+	# Input default policy: DROP
+	# Output default policy: ACCEPT
+	if [ "$IO_OPTION" = '-i' ] ; then
+		iptables -A "$DEFAULT_CHAIN" -j DROP
+	else
+		iptables -A "$DEFAULT_CHAIN" -j ACCEPT
+	fi
+	
+	# Load the interface overrides
+	create_empty_chain "$INTERFACE_CHAIN"
+	
+	local RULES="$RULES_PATH/$INTERFACE_RULES"
+	if [ -f "$RULES" ] ; then
+		local PARAMS
+		while read PARAMS ; do
+			echo "$PARAMS" | strip_comments > /dev/null || continue
+			eval iptables -A "$INTERFACE_CHAIN" "$IO_OPTION" "$IFACE" $PARAMS || return 4
+		done < "$RULES"
+	fi
+	
+	# Link interface chain to default chain
+	iptables -A "$INTERFACE_CHAIN" -j "$DEFAULT_CHAIN"
+	# Link INPUT/OUTPUT to interface chain (do not create duplicate entries!)
+	if [ "`echo $CREATE_EMPTY_CHAIN_LAST`" = "$INTERFACE_CHAIN new" ] ; then
+		local IO=`echo $1 | tr a-z A-Z`
+		iptables -A "$IO" "$IO_OPTION" "$IFACE" -j "$INTERFACE_CHAIN"
+	fi
+	# Else interface chain was present so we have already created the link
+}
+
+stop_direction(){
+	# $1 is input|output|forward specifying direction of filtered traffic (or rather the iptables built-in chain).
+	echo "$1" | egrep -q '^(input|output|forward)$' || return 5
+	
+	local INTERFACE_CHAIN="$1_$INTERFACE_CHAIN"
+	
+	# Remove link to interface chain from INPUT/OUTPUT
+	local IO=`echo $1 | tr a-z A-Z`
+	local IO_OPTION='-i'
+	[ "$1" = 'output' ] && IO_OPTION='-o'
+	# Don't consider errors here. Attempting to remove a non-existent
+	# rule is OK... Anyway, failure to remove the referencing rule from
+	# INPUT/OUTPUT chains will result in failure to remove the interface's
+	# chain, so an error will arise nevertheless.
+	iptables -D "$IO" "$IO_OPTION" "$IFACE" -j "$INTERFACE_CHAIN" > /dev/null 2>&1 || true
+	
+	remove_chain "$INTERFACE_CHAIN"
+}
+
+post_down_direction(){
+	# $1 is input|output|forward specifying direction of filtered traffic (or rather the iptables built-in chain).
+	echo "$1" | egrep -q '^(input|output|forward)$' || return 5
+	
+	local DEFAULT_CHAIN="$1_$DEFAULT_CHAIN"
+	
+	# Check if no more interface chains are left
+	local REMAINING=`check_chain '.*_interface_.*'`
+	if [ "$REMAINING" -eq 0 ] ; then
+		# Nothing left...
+		remove_chain "$DEFAULT_CHAIN"
+	fi
+}
+
+start(){
+	start_direction input
+	start_direction output
+	start_direction forward
+}
+
+stop(){
+	stop_direction input
+	stop_direction output
+	stop_direction forward
+}
+
+post_down(){
+	post_down_direction input
+	post_down_direction output
+	post_down_direction forward
+}
+
+if [ "$#" -ne 0 ] ; then
+	# Command line, so chek options and set variables
+	case "$1" in
+		--start|--force-start)
+			[ "$1" = '--force-start' ] && FORCE=1
+			shift
+			MODE="start"
+			if [ "$#" -eq 1 -a "$1" = 'ALL' ] ; then
+				LIST=`get_active_interfaces`
+			else
+				LIST="$@"
+			fi
+			for IFACE in $LIST ; do
+				set_vars
+				ACTIVE=`check_interface $IFACE`
+				if [ "$ACTIVE" -eq 0 ] ; then
+					echo "Interface '$IFACE' not active. Skipping..."
+					continue
+				fi
+				start
+			done
+			;;
+		--stop)
+			shift
+			MODE="stop"
+			if [ "$#" -eq 1 -a "$1" = 'ALL' ] ; then
+				LIST=`get_all_interfaces`
+			else
+				LIST="$@"
+			fi
+			for IFACE in $LIST ; do
+				set_vars
+				ACTIVE=`check_interface_all $IFACE`
+				if [ "$ACTIVE" -eq 0 ] ; then
+					echo "Interface '$IFACE' does not exist. Skipping..."
+					continue
+				fi
+				stop
+				post_down
+			done
+			;;
+		*)
+			usage
+			exit 10
+			;;
+	esac
+else
+	# No parameters, so we asume we're called by ifup/ifdown
+	
+	[ -n "$IFACE" ] || exit 1
+	[ -n "$MODE" ] || exit 1
+	# We no longer depend of the phase
+	# [ -n "$PHASE" ] || exit 1
+	
+	[ "$IFACE" = 'lo' ] && exit 0
+
+	set_vars
+
+	if [ "$MODE" = 'start' ] ; then
+		start
+	elif [ "$MODE" = 'stop' ] ; then
+		stop
+		post_down
+	else
+		exit 2
+	fi
+fi
