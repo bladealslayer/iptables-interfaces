@@ -25,4 +25,4 @@ automatic network initialization by symlinking in the /etc/network/if-up.d/ and
 
 For usage help, run:
 
-```iptables-interfaces --help```
+iptables-interfaces --help
