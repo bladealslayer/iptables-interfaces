@@ -1,0 +1,28 @@
+iptables-interfaces
+=============================================
+
+iptables-interfaces is a shell script for managing iptables rules.
+It allowes rules to be defined per interface and per direction of traffic
+(think INPUT, OUTPUT and FORWARD). Rules are defined in iptables command syntax.
+
+iptables-interfaces should not interfere with any other tools setting iptables
+rules, unless there is a collision in the created additional chains.
+
+iptables-interfaces creates a separate chain for each interface and direction
+and adds a rule in INPUT, OUTPUT and FORWARD chains that sends traffic for that
+interface and direction through the created chain.
+
+Per-interface chains end with a rule that links to a default chain for that
+traffic direction. This allows default rules to apply to all interfaces.
+
+Example: Chains for incoming traffic on eth0:
+INPUT -> input_eth0 -> input_default
+
+The contents of the conf/ directory need to be placed under /etc. On a Debian
+based distribution, the iptables-interfaces script can be hooked to the
+automatic network initialization by symlinking in the /etc/network/if-up.d/ and
+/etc/network/if-down.d/ directories.
+
+For usage help, run:
+
+```iptables-interfaces --help```
