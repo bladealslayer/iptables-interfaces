@@ -33,14 +33,16 @@ FORCE=0
 
 # Config file options:
 IGNORED_INTERFACES=""
+IPV6='no'
 
 [ -f "$CONFIG" ] && . "$CONFIG"
 
 set_vars(){
+	# $1 is either empty or '_6' for IPv6 suffix
 	DEFAULT_CHAIN='default'
 	INTERFACE_CHAIN="interface_$IFACE"
-	DEFAULT_RULES='default.conf'
-	INTERFACE_RULES="$IFACE.conf"
+	DEFAULT_RULES="default$1.conf"
+	INTERFACE_RULES="$IFACE$1.conf"
 }
 
 usage(){
@@ -70,7 +72,7 @@ should_ignore(){
 }
 
 check_chain(){
-	local LOADED=`iptables -nL | grep "^Chain[[:space:]]*$1[[:space:]]" | wc -l`
+	local LOADED=`$IPTABLES_CMD -nL | grep "^Chain[[:space:]]*$1[[:space:]]" | wc -l`
 	# Chain is there
 	[ "$LOADED" -ne 0 ] && { echo 1 ; return 0 ; }
 	# Chain is not there
@@ -112,10 +114,10 @@ strip_comments(){
 create_empty_chain(){
 	local LOADED=`check_chain "$1"`
 	if [ "$LOADED" -eq 0 ] ; then
-		iptables -N "$1"
+		$IPTABLES_CMD -N "$1"
 		CREATE_EMPTY_CHAIN_LAST="$1 new"
 	else
-		iptables -F "$1"
+		$IPTABLES_CMD -F "$1"
 		CREATE_EMPTY_CHAIN_LAST="$1 exists"
 	fi
 }
@@ -123,8 +125,8 @@ create_empty_chain(){
 remove_chain(){
 	local LOADED=`check_chain "$1"`
 	if [ "$LOADED" -eq 1 ] ; then
-		iptables -F "$1"
-		iptables -X "$1"
+		$IPTABLES_CMD -F "$1"
+		$IPTABLES_CMD -X "$1"
 	fi
 }
 
@@ -151,7 +153,7 @@ start_direction(){
 		local PARAMS
 		while read PARAMS ; do
 			echo "$PARAMS" | strip_comments > /dev/null || continue
-			eval iptables -A "$DEFAULT_CHAIN"  $PARAMS || return 4
+			eval $IPTABLES_CMD -A "$DEFAULT_CHAIN"  $PARAMS || return 4
 		done < "$RULES"
 	fi
 	
@@ -161,9 +163,9 @@ start_direction(){
 	# Input default policy: DROP
 	# Output default policy: ACCEPT
 	if [ "$IO_OPTION" = '-i' ] ; then
-		iptables -A "$DEFAULT_CHAIN" -j DROP
+		$IPTABLES_CMD -A "$DEFAULT_CHAIN" -j DROP
 	else
-		iptables -A "$DEFAULT_CHAIN" -j ACCEPT
+		$IPTABLES_CMD -A "$DEFAULT_CHAIN" -j ACCEPT
 	fi
 	
 	# Load the interface overrides
@@ -174,16 +176,16 @@ start_direction(){
 		local PARAMS
 		while read PARAMS ; do
 			echo "$PARAMS" | strip_comments > /dev/null || continue
-			eval iptables -A "$INTERFACE_CHAIN" "$IO_OPTION" "$IFACE" $PARAMS || return 4
+			eval $IPTABLES_CMD -A "$INTERFACE_CHAIN" "$IO_OPTION" "$IFACE" $PARAMS || return 4
 		done < "$RULES"
 	fi
 	
 	# Link interface chain to default chain
-	iptables -A "$INTERFACE_CHAIN" -j "$DEFAULT_CHAIN"
+	$IPTABLES_CMD -A "$INTERFACE_CHAIN" -j "$DEFAULT_CHAIN"
 	# Link INPUT/OUTPUT to interface chain (do not create duplicate entries!)
 	if [ "`echo $CREATE_EMPTY_CHAIN_LAST`" = "$INTERFACE_CHAIN new" ] ; then
 		local IO=`echo $1 | tr a-z A-Z`
-		iptables -A "$IO" "$IO_OPTION" "$IFACE" -j "$INTERFACE_CHAIN"
+		$IPTABLES_CMD -A "$IO" "$IO_OPTION" "$IFACE" -j "$INTERFACE_CHAIN"
 	fi
 	# Else interface chain was present so we have already created the link
 }
@@ -202,7 +204,7 @@ stop_direction(){
 	# rule is OK... Anyway, failure to remove the referencing rule from
 	# INPUT/OUTPUT chains will result in failure to remove the interface's
 	# chain, so an error will arise nevertheless.
-	iptables -D "$IO" "$IO_OPTION" "$IFACE" -j "$INTERFACE_CHAIN" > /dev/null 2>&1 || true
+	$IPTABLES_CMD -D "$IO" "$IO_OPTION" "$IFACE" -j "$INTERFACE_CHAIN" > /dev/null 2>&1 || true
 	
 	remove_chain "$INTERFACE_CHAIN"
 }
@@ -221,22 +223,48 @@ post_down_direction(){
 	fi
 }
 
-start(){
+do_start(){
 	start_direction input
 	start_direction output
 	start_direction forward
 }
 
-stop(){
+do_stop(){
 	stop_direction input
 	stop_direction output
 	stop_direction forward
 }
 
-post_down(){
+do_post_down(){
 	post_down_direction input
 	post_down_direction output
 	post_down_direction forward
+}
+
+ip_ver_wrap(){
+	# $1 is start|stop|port_down
+	echo "$1" | egrep -q '^(start|stop|post_down)$' || return 5
+
+	IPTABLES_CMD='iptables'
+	set_vars
+	"do_$1"
+	if [ "$IPV6" == 'yes' ] ; then
+		IPTABLES_CMD='ip6tables'
+		set_vars _6
+		"do_$1"
+	fi
+}
+
+start(){
+	ip_ver_wrap start
+}
+
+stop(){
+	ip_ver_wrap stop
+}
+
+post_down(){
+	ip_ver_wrap post_down
 }
 
 if [ "$#" -ne 0 ] ; then
@@ -252,7 +280,6 @@ if [ "$#" -ne 0 ] ; then
 				LIST="$@"
 			fi
 			for IFACE in $LIST ; do
-				set_vars
 				ACTIVE=`check_interface $IFACE`
 				if [ "$ACTIVE" -eq 0 ] ; then
 					echo "Interface '$IFACE' not active. Skipping..."
@@ -270,7 +297,6 @@ if [ "$#" -ne 0 ] ; then
 				LIST="$@"
 			fi
 			for IFACE in $LIST ; do
-				set_vars
 				ACTIVE=`check_interface_all $IFACE`
 				if [ "$ACTIVE" -eq 0 ] ; then
 					echo "Interface '$IFACE' does not exist. Skipping..."
@@ -294,8 +320,6 @@ else
 	# [ -n "$PHASE" ] || exit 1
 	
 	[ "$IFACE" = 'lo' ] && exit 0
-
-	set_vars
 
 	if [ "$MODE" = 'start' ] ; then
 		start
