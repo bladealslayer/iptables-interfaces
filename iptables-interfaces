@@ -3,7 +3,7 @@
 ############################################################################
 #    iptables-interfaces                                                   #
 #    iptables' ifup/ifdown initialization script                           #
-#    v0.1.2                                                                #
+#    v0.1.3                                                                #
 #                                                                          #
 #    This script is designed to be called by ifup/ifdown scripts upon      #
 #    interface (de)initialization. Command line operation is also          #
@@ -80,7 +80,7 @@ check_chain(){
 }
 
 check_interface_all(){
-	local EXISTS=`ifconfig -a | grep "^$1[[:space:]]" | wc -l`
+	local EXISTS=`ifconfig -a | grep "^$1:\?[[:space:]]" | wc -l`
 	# Interface exists
 	[ "$EXISTS" -ne 0 ] && { echo 1 ; return 0 ; }
 	# Interface does not exist
@@ -88,7 +88,7 @@ check_interface_all(){
 }
 
 check_interface(){
-	local ACTIVE=`ifconfig | grep "^$1[[:space:]]" | wc -l`
+	local ACTIVE=`ifconfig | grep "^$1:\?[[:space:]]" | wc -l`
 	# Interface is active
 	[ "$ACTIVE" -ne 0 ] && { echo 1 ; return 0 ; }
 	# Interface is not active
@@ -96,11 +96,13 @@ check_interface(){
 }
 
 get_all_interfaces(){
-	ifconfig -a | grep '^[^[:space:]]' | grep -wv '^lo' | awk '{print $1}' | xargs echo
+	# the awk script strips trailing colon (:) present in e.g. Fedora's ifconfig output
+	ifconfig -a | grep '^[^[:space:]]' | grep -wv '^lo' | awk '{if (substr($1, length($1), 1) == ":" ){print substr($1, 1, length($1)-1)} else {print $1}}' | xargs echo
 }
 
 get_active_interfaces(){
-	ifconfig | grep '^[^[:space:]]' | grep -wv '^lo' | awk '{print $1}' | xargs echo
+	# the awk script strips trailing colon (:) present in e.g. Fedora's ifconfig output
+	ifconfig | grep '^[^[:space:]]' | grep -wv '^lo' | awk '{if (substr($1, length($1), 1) == ":" ){print substr($1, 1, length($1)-1)} else {print $1}}' | xargs echo
 }
 
 get_active_interfaces_count(){
