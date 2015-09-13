@@ -320,6 +320,7 @@ else
 	[ -n "$MODE" ] || exit 1
 	
 	[ "$IFACE" = 'lo' ] && exit 0
+	[ "$IFACE" = '--all' ] && exit 0
 
 	if [ "$MODE" = 'start' ] ; then
 		start
