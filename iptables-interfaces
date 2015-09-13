@@ -318,8 +318,6 @@ else
 	
 	[ -n "$IFACE" ] || exit 1
 	[ -n "$MODE" ] || exit 1
-	# We no longer depend of the phase
-	# [ -n "$PHASE" ] || exit 1
 	
 	[ "$IFACE" = 'lo' ] && exit 0
 
