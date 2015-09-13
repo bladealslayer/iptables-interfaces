@@ -3,13 +3,13 @@
 ############################################################################
 #    iptables-interfaces                                                   #
 #    iptables' ifup/ifdown initialization script                           #
-#    v0.1.3                                                                #
+#    v0.1.4                                                                #
 #                                                                          #
 #    This script is designed to be called by ifup/ifdown scripts upon      #
 #    interface (de)initialization. Command line operation is also          #
 #    possible.                                                             #
 #                                                                          #
-#    Copyright (C) 2007-2011 by Boyan Tabakov                              #
+#    Copyright (C) 2007-2015 by Boyan Tabakov                              #
 #    blade@alslayer.net                                                    #
 #                                                                          #
 #    This program is free software; you can redistribute it and/or modify  #
